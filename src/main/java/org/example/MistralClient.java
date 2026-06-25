@@ -18,7 +18,10 @@ public class MistralClient {
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
     private final OkHttpClient client = new OkHttpClient.Builder()
-            .callTimeout(Duration.ofSeconds(120))
+            .connectTimeout(Duration.ofSeconds(30))
+            .writeTimeout(Duration.ofSeconds(30))
+            .readTimeout(Duration.ofSeconds(180))   // Mistral может думать долго на большом объёме постов
+            .callTimeout(Duration.ofSeconds(200))
             .build();
 
     private final String apiKey;
