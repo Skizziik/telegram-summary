@@ -21,20 +21,29 @@ public class TelegramSender {
     private final OkHttpClient client = new OkHttpClient();
 
     private final String botToken;
-    private final String chatId;
+    private final List<String> chatIds;
 
     public TelegramSender(String botToken, String chatId) {
         this.botToken = botToken;
-        this.chatId = chatId;
-    }
-
-    public void send(String text) throws IOException {
-        for (String chunk : split(text)) {
-            sendChunk(chunk);
+        // Поддержка нескольких получателей: "123,456,789".
+        this.chatIds = new ArrayList<>();
+        for (String id : chatId.split(",")) {
+            String trimmed = id.trim();
+            if (!trimmed.isEmpty()) {
+                this.chatIds.add(trimmed);
+            }
         }
     }
 
-    private void sendChunk(String text) throws IOException {
+    public void send(String text) throws IOException {
+        for (String chatId : chatIds) {
+            for (String chunk : split(text)) {
+                sendChunk(chatId, chunk);
+            }
+        }
+    }
+
+    private void sendChunk(String chatId, String text) throws IOException {
 
         JsonObject body = new JsonObject();
         body.addProperty("chat_id", chatId);
