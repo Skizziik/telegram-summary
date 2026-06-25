@@ -1,0 +1,6 @@
+target/
+telegram.db
+.idea/
+.git/
+.github/
+*.iml
