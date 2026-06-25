@@ -11,5 +11,5 @@ FROM eclipse-temurin:21-jre
 WORKDIR /app
 COPY --from=build /app/target/telegram-summary.jar app.jar
 
-# На Render это Cron Job: контейнер стартует, делает один прогон и завершается.
-CMD ["java", "-jar", "app.jar", "now"]
+# Веб-сервис: слушает HTTP, пайплайн дёргает внешний крон через /run?token=...
+CMD ["java", "-jar", "app.jar"]

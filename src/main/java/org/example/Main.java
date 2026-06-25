@@ -1,15 +1,19 @@
 package org.example;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 
-import java.time.Duration;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Main {
 
@@ -19,46 +23,64 @@ public class Main {
             "maxkiller69"
     };
 
-    private static final LocalTime RUN_AT = LocalTime.of(23, 0);
+    // Защита от параллельных запусков (cron + ручной триггер одновременно).
+    private static final AtomicBoolean running = new AtomicBoolean(false);
 
     public static void main(String[] args) throws Exception {
 
         Database.init();
 
-        // Прогон "сейчас" для теста:  java -jar telegram-summary.jar now
+        // Разовый прогон для теста:  java -jar telegram-summary.jar now
         if (args.length > 0 && args[0].equalsIgnoreCase("now")) {
             runPipeline();
             return;
         }
 
-        // Иначе — демон с планировщиком на 23:00 каждый день.
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-        scheduleNextRun(scheduler);
-        System.out.println("Планировщик запущен. Сводка каждый день в " + RUN_AT + ".");
+        // Иначе — поднимаем HTTP-сервер, который дёргает внешний крон (cron-job.org).
+        startServer();
     }
 
-    private static void scheduleNextRun(ScheduledExecutorService scheduler) {
-        long delay = secondsUntilNext(RUN_AT);
-        scheduler.schedule(() -> {
+    private static void startServer() throws IOException {
+        int port = Integer.parseInt(envOrDefault("PORT", "8080"));
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+
+        server.createContext("/run", Main::handleRun);
+        server.createContext("/", exchange -> respond(exchange, 200, "ok"));
+
+        server.setExecutor(Executors.newFixedThreadPool(2));
+        server.start();
+        System.out.println("HTTP-сервер запущен на порту " + port + ". Эндпоинт: /run?token=...");
+    }
+
+    private static void handleRun(HttpExchange exchange) throws IOException {
+
+        // Проверка секретного токена из ?token=...
+        String expected = System.getenv("RUN_TOKEN");
+        String got = queryParam(exchange, "token");
+        if (expected == null || expected.isBlank() || !expected.equals(got)) {
+            respond(exchange, 403, "forbidden");
+            return;
+        }
+
+        if (!running.compareAndSet(false, true)) {
+            respond(exchange, 409, "already running");
+            return;
+        }
+
+        // Запускаем пайплайн в фоне и сразу отвечаем 200 — чтобы крон не словил
+        // таймаут на холодном старте Render.
+        new Thread(() -> {
             try {
                 runPipeline();
             } catch (Exception e) {
                 System.err.println("Ошибка пайплайна: " + e.getMessage());
                 e.printStackTrace();
             } finally {
-                // Перепланируем на следующий день в любом случае.
-                scheduleNextRun(scheduler);
+                running.set(false);
             }
-        }, delay, TimeUnit.SECONDS);
-    }
+        }, "pipeline").start();
 
-    private static long secondsUntilNext(LocalTime time) {
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime next = now.toLocalDate().atTime(time);
-        if (!next.isAfter(now)) {
-            next = next.plusDays(1);
-        }
-        return Duration.between(now, next).getSeconds();
+        respond(exchange, 200, "pipeline started");
     }
 
     private static void runPipeline() throws Exception {
@@ -104,6 +126,27 @@ public class Main {
             }
         }
         Database.countPosts();
+    }
+
+    private static String queryParam(HttpExchange exchange, String name) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null) {
+            return null;
+        }
+        return Arrays.stream(query.split("&"))
+                .map(p -> p.split("=", 2))
+                .filter(kv -> kv.length == 2 && kv[0].equals(name))
+                .map(kv -> kv[1])
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static void respond(HttpExchange exchange, int code, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(code, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
     }
 
     private static String requireEnv(String name) {

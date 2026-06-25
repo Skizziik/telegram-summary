@@ -1,16 +1,19 @@
 services:
-  - type: cron
+  - type: web
     name: telegram-summary
     runtime: docker
+    plan: free
     dockerfilePath: ./Dockerfile
-    # Render использует UTC. 20:00 UTC = 23:00 по Москве (UTC+3).
-    schedule: "0 20 * * *"
+    healthCheckPath: /
     envVars:
       - key: MISTRAL_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Секрет для защиты /run — придумай длинную строку, её же вставишь в cron-job.org.
+      - key: RUN_TOKEN
         sync: false
       - key: MISTRAL_MODEL
         value: mistral-small-latest
