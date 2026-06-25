@@ -10,8 +10,13 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -23,8 +28,13 @@ public class Main {
             "maxkiller69"
     };
 
+    // Окно сводки: посты за последние сутки по РЕАЛЬНОМУ времени публикации.
+    private static final Duration WINDOW = Duration.ofHours(24);
+
     // Защита от параллельных запусков (cron + ручной триггер одновременно).
     private static final AtomicBoolean running = new AtomicBoolean(false);
+
+    private record Post(String channel, String text, OffsetDateTime time) {}
 
     public static void main(String[] args) throws Exception {
 
@@ -87,20 +97,24 @@ public class Main {
 
         System.out.println("=== Старт пайплайна " + LocalDateTime.now() + " ===");
 
-        // 1. Скрейпим каналы → БД.
-        scrapeChannels();
-
-        // 2. Берём посты за сутки.
-        String posts = Database.getTodayPosts();
-        if (posts.isBlank()) {
-            System.out.println("Постов за сутки нет — сводка не нужна.");
+        // 1. Скрейпим каналы и берём только посты за последние сутки (по времени поста).
+        List<Post> posts = scrapeRecentPosts(WINDOW);
+        if (posts.isEmpty()) {
+            System.out.println("Новых постов за сутки нет — сводка не нужна.");
             return;
+        }
+
+        // 2. Собираем текст для модели.
+        StringBuilder sb = new StringBuilder();
+        for (Post p : posts) {
+            sb.append("Канал: ").append(p.channel()).append("\n")
+                    .append(p.text()).append("\n\n");
         }
 
         // 3. Отправляем в Mistral, получаем сводку.
         String apiKey = requireEnv("MISTRAL_API_KEY");
         String model = envOrDefault("MISTRAL_MODEL", "mistral-small-latest");
-        String summary = new MistralClient(apiKey, model).summarize(posts);
+        String summary = new MistralClient(apiKey, model).summarize(sb.toString());
         System.out.println("=== СВОДКА ===\n" + summary);
 
         // 4. Отправляем сводку в Telegram.
@@ -111,21 +125,49 @@ public class Main {
         System.out.println("=== Готово, сводка отправлена ===");
     }
 
-    private static void scrapeChannels() throws Exception {
-        for (String channel : CHANNELS) {
+    private static List<Post> scrapeRecentPosts(Duration window) throws Exception {
+        OffsetDateTime cutoff = OffsetDateTime.now(ZoneOffset.UTC).minus(window);
+        List<Post> result = new ArrayList<>();
 
+        for (String channel : CHANNELS) {
             System.out.println("Читаем канал: " + channel);
 
             Document doc = Jsoup.connect("https://t.me/s/" + channel)
                     .userAgent("Mozilla/5.0")
                     .get();
 
-            for (Element msg : doc.select(".tgme_widget_message_text")) {
-                String text = msg.text();
+            for (Element msg : doc.select(".tgme_widget_message")) {
+                Element textEl = msg.selectFirst(".tgme_widget_message_text");
+                Element timeEl = msg.selectFirst(".tgme_widget_message_date time[datetime]");
+                if (textEl == null || timeEl == null) {
+                    continue; // медиа без текста или пост без даты
+                }
+
+                String text = textEl.text();
+                if (text.isBlank()) {
+                    continue;
+                }
+
+                OffsetDateTime posted;
+                try {
+                    posted = OffsetDateTime.parse(timeEl.attr("datetime"));
+                } catch (Exception e) {
+                    continue;
+                }
+
+                // Старше суток — пропускаем. Так посты не повторяются между днями.
+                if (posted.isBefore(cutoff)) {
+                    continue;
+                }
+
+                result.add(new Post(channel, text, posted));
+                // Сохраняем в БД для истории (дедуп по хэшу в рамках запуска).
                 Database.savePost(channel, text, String.valueOf(text.hashCode()));
             }
         }
-        Database.countPosts();
+
+        System.out.println("Постов за последние " + window.toHours() + "ч: " + result.size());
+        return result;
     }
 
     private static String queryParam(HttpExchange exchange, String name) {
