@@ -11,6 +11,10 @@ import okhttp3.Response;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 
 public class MistralClient {
 
@@ -34,12 +38,16 @@ public class MistralClient {
 
     public String summarize(String posts) throws IOException {
 
+        String today = LocalDate.now(ZoneId.of("Europe/Moscow"))
+                .format(DateTimeFormatter.ofPattern("d MMMM yyyy 'г.'", Locale.forLanguageTag("ru")));
+
         String prompt = """
-                Ты — помощник, который делает краткую сводку постов из Telegram-каналов за сутки.
+                Сегодня %s. Ты делаешь краткую сводку постов из Telegram-каналов за последние сутки.
                 Сгруппируй по темам, выдели главное, убери воду и рекламу. Пиши на русском, по делу.
+                Не выдумывай даты и факты, которых нет в постах. Если ставишь заголовок с датой — используй только сегодняшнюю, указанную выше.
 
                 Посты:
-                """ + posts;
+                """.formatted(today) + posts;
 
         JsonObject message = new JsonObject();
         message.addProperty("role", "user");
